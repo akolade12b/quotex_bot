@@ -1,0 +1,27 @@
+# Quotex Signal Bot — systemd unit (template).
+#
+# deploy.sh substitutes __USER__ and __DIR__ on the target host when it
+# installs this file as /etc/systemd/system/quotex-bot.service.
+#
+# Behaviour:
+#   - starts on boot (systemctl enable)
+#   - restarts automatically if it crashes (Restart=always)
+#   - logs go to journald (journalctl -u quotex-bot)
+[Unit]
+Description=Quotex Signal Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/.venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

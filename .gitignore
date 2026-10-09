@@ -1,0 +1,24 @@
+# secrets
+.env
+
+# runtime data
+data/*.db
+data/*.db-*
+
+# live session credentials (Telegram userbot — full account access)
+data/*.session
+*.session
+
+# local tooling state (this project's settings.local.json holds live tokens)
+.claude/
+
+# debug artifacts — frame dumps and login screenshots
+debug/*.log
+debug/*.png
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
