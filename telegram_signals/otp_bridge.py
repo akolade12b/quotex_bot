@@ -41,8 +41,18 @@ class OtpBridge:
         non-numeric reply (the login fails and the caller may retry, which
         sends a fresh prompt).
         """
+        code = await self.request_text(prompt)
+        if not code.isdigit():
+            raise BrokerAuthError(f"OTP reply was not a numeric PIN: {code!r}")
+        return code
+
+    async def request_text(self, prompt: str = "Enter the Telegram login code: ") -> str:
+        """Send a Telegram prompt and wait for arbitrary text.
+
+        Used for Telethon's Telegram login code and optional 2FA password.
+        """
         if self.awaiting:
-            raise BrokerAuthError("OTP already pending — send the code")
+            raise BrokerAuthError("authentication input already pending — reply in Telegram")
         fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._pending = fut
         try:
@@ -65,10 +75,7 @@ class OtpBridge:
             ) from None
         finally:
             self._pending = None
-        code = str(code).strip()
-        if not code.isdigit():
-            raise BrokerAuthError(f"OTP reply was not a numeric PIN: {code!r}")
-        return code
+        return str(code).strip()
 
     def submit_pin(self, text: str) -> bool:
         """Resolve a pending OTP wait with ``text``. Returns True if consumed

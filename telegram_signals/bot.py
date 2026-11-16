@@ -26,8 +26,16 @@ def build_bot(
     signal_expiry_s: int = 0,
     handler: SignalHandler | None = None,
     otp_bridge: object | None = None,
+    telegram_auth_bridge: object | None = None,
     switch_mode: Callable[[bool], Awaitable[tuple[str, float]]] | None = None,
     status_fn: Callable[[], Awaitable[tuple[str, float]]] | None = None,
+    auto_enabled: Callable[[], bool] | None = None,
+    toggle_auto=None,
+    channels_fn=None,
+    connect_fn=None,
+    details_fn=None,
+    channel_choices_fn=None,
+    toggle_channel=None,
 ) -> Application:
     """Build a Telegram Application that enqueues parsed signals onto ``queue``.
 
@@ -51,6 +59,7 @@ def build_bot(
             dedup_window_s=dedup_window_s,
             signal_expiry_s=signal_expiry_s,
             otp_bridge=otp_bridge,
+            telegram_auth_bridge=telegram_auth_bridge,
         )
     elif otp_bridge is not None:
         # A shared handler (group monitor) — attach the bridge the same way.
@@ -77,5 +86,12 @@ def build_bot(
         status_fn=status_fn,
         allowed_chat_ids=allowed_chat_ids,
         allowlist_enabled=allowlist_enabled,
+        auto_enabled=auto_enabled,
+        toggle_auto=toggle_auto,
+        channels_fn=channels_fn,
+        connect_fn=connect_fn,
+        details_fn=details_fn,
+        channel_choices_fn=channel_choices_fn,
+        toggle_channel=toggle_channel,
     )
     return application

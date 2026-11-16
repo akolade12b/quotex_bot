@@ -25,6 +25,7 @@ from execution.engine import ExecutionEngine
 from execution.risk import RiskManager
 from persistence.repository import TradeRepository
 from telegram_signals.bot import build_bot
+from telegram_signals.commands import panel_markup
 from telegram_signals.group_monitor import GroupMonitor, should_run
 from telegram_signals.handlers import SignalHandler
 from telegram_signals.model import Signal
@@ -150,6 +151,7 @@ async def run(args: argparse.Namespace) -> None:
     # OTP bridge first, so a 2FA PIN during login can be answered over Telegram
     # (the server path starts the bot before broker.connect()).
     otp_bridge = OtpBridge()
+    telegram_auth_bridge = OtpBridge()
     broker = build_broker(config, otp_bridge=otp_bridge)
 
     risk = RiskManager(config.risk, repo)
@@ -210,6 +212,81 @@ async def run(args: argparse.Namespace) -> None:
         label, balance = await broker.switch_mode(demo=demo)
         return f"quotex-{label}", balance
 
+    async def _toggle_auto(enabled: bool) -> bool:
+        engine.auto_trading_enabled = enabled
+        logger.warning("Telegram control: auto trading %s", "ON" if enabled else "OFF")
+        return enabled
+
+    balance_details_lock = asyncio.Lock()
+
+    async def _account_details() -> str:
+        """Fetch both Quotex account balances and restore the active mode."""
+        if not isinstance(broker, LiveQuotexClient):
+            return ""
+        async with balance_details_lock:
+            open_trades = await repo.list_open_trades()
+            if open_trades:
+                return "Account balances: switch blocked while trades are open\n"
+            original_demo = broker.is_demo
+            balances: dict[str, float] = {}
+            try:
+                for demo in (True, False):
+                    _, balances["demo" if demo else "real"] = await asyncio.wait_for(
+                        broker.switch_mode(demo=demo), timeout=45.0
+                    )
+            finally:
+                if broker.is_demo != original_demo:
+                    try:
+                        await asyncio.wait_for(
+                            broker.switch_mode(demo=original_demo), timeout=45.0
+                        )
+                    except Exception:
+                        logger.exception("failed to restore Quotex mode after balance check")
+            return (
+                f"Demo balance: `{balances['demo']:.2f}`\n"
+                f"Real balance: `{balances['real']:.2f}`\n"
+            )
+
+    def _channels_text() -> str:
+        monitor_active = monitor is not None and monitor.ready.is_set()
+        if config.app.monitor_links:
+            monitored = "\n".join(
+                f"{'✅' if monitor_active else '⏳'} {link}"
+                for link in config.app.monitor_links
+            )
+        else:
+            if monitor_active and monitor is not None and monitor.channel_labels:
+                monitored = "\n".join(f"✅ {label}" for label in monitor.channel_labels)
+            elif config.app.monitor_all:
+                monitored = "⏳ all broadcast channels (user session starting)"
+            else:
+                monitored = "none configured"
+        allowed = ", ".join(str(cid) for cid in config.app.allowed_chat_ids) if config.app.allowed_chat_ids else "none"
+        return (
+            "📡 Monitored channels:\n"
+            f"{monitored}\n"
+            f"Allowed chat IDs: `{allowed}`"
+        )
+
+    def _channel_choices() -> list[tuple[int, str, bool]]:
+        return list(monitor.channel_options) if monitor is not None else []
+
+    async def _toggle_channel(channel_id: int, enabled: bool) -> None:
+        if monitor is None or not monitor.ready.is_set():
+            raise RuntimeError("channel monitor is not ready")
+        await monitor.set_channel_monitoring(channel_id, enabled)
+
+    def _connect_text() -> str:
+        return (
+            "🔐 *Connect Quotex securely*\n\n"
+            "Do not send credentials or session tokens in Telegram. Put them in the server `.env`, then restart:\n\n"
+            "`QSB_BROKER_MODE=quotex`\n"
+            "`QSB_QUOTEX_MODE=demo`\n"
+            "`QSB_DEMO_SSID=...` (preferred)\n"
+            "or `QSB_EMAIL=...` and `QSB_PASSWORD=...`\n\n"
+            "Validate demo mode before switching to real money."
+        )
+
     # One shared signal handler so the PTB bot and the group monitor parse with
     # the same dedup window — a signal seen twice is dropped, never double-traded.
     handler = None
@@ -218,6 +295,7 @@ async def run(args: argparse.Namespace) -> None:
         config.app.monitor_api_id,
         config.app.monitor_api_hash,
         config.app.monitor_phone,
+        config.app.monitor_all,
     )
     if config.app.telegram_token or monitor_run:
         handler = SignalHandler(
@@ -228,6 +306,7 @@ async def run(args: argparse.Namespace) -> None:
             dedup_window_s=config.app.signal_dedup_window_s,
             signal_expiry_s=config.app.signal_expiry_s,
             otp_bridge=otp_bridge,
+            telegram_auth_bridge=telegram_auth_bridge,
         )
 
     bot = None
@@ -244,6 +323,13 @@ async def run(args: argparse.Namespace) -> None:
             handler=handler,
             switch_mode=_switch_mode if isinstance(broker, LiveQuotexClient) else None,
             status_fn=_status,
+            auto_enabled=lambda: engine.auto_trading_enabled,
+            toggle_auto=_toggle_auto,
+            channels_fn=_channels_text,
+            connect_fn=_connect_text,
+            details_fn=_account_details,
+            channel_choices_fn=_channel_choices,
+            toggle_channel=_toggle_channel,
         )
         await bot.initialize()
         await bot.start()
@@ -277,6 +363,8 @@ async def run(args: argparse.Namespace) -> None:
                 api_hash=config.app.monitor_api_hash,
                 phone=config.app.monitor_phone,
                 links=config.app.monitor_links,
+                all_channels=config.app.monitor_all,
+                auth_bridge=telegram_auth_bridge,
             )
             tasks.append(asyncio.create_task(
                 monitor.run_forever(), name="group-monitor"
@@ -286,7 +374,7 @@ async def run(args: argparse.Namespace) -> None:
                 len(config.app.monitor_links),
                 ", ".join(config.app.monitor_links),
             )
-    elif config.app.monitor_links:
+    elif config.app.monitor_links or config.app.monitor_all:
         logger.warning(
             "QSB_MONITOR_LINK set but userbot credentials incomplete "
             "(need QSB_MONITOR_API_ID, QSB_MONITOR_API_HASH, QSB_MONITOR_PHONE) "
@@ -308,6 +396,7 @@ async def run(args: argparse.Namespace) -> None:
                     logger.exception("failed to send OTP prompt to chat %s", cid)
 
         otp_bridge.send_prompt = _send_otp_prompt
+        telegram_auth_bridge.send_prompt = _send_otp_prompt
         logger.info("OTP bridge wired to Telegram (%d chat(s))", len(allowed))
     else:
         logger.info("no Telegram bot — OTP login must use a pasted QSB_SSID")
@@ -360,6 +449,30 @@ async def run(args: argparse.Namespace) -> None:
         logger.error("broker failed to connect: %s", exc)
         await _shutdown(broker_disconnect=False)
         raise SystemExit(1) from exc
+
+    # Login may have paused for an OTP sent through Telegram. Once the broker
+    # finishes authenticating, confirm success and show the control buttons.
+    if bot is not None and config.app.allowed_chat_ids:
+        label, balance = await _status()
+        connected_text = (
+            "✅ *Quotex connected successfully*\n\n"
+            f"Broker: `{label}`\n"
+            f"Balance: `{balance:.2f}`\n\n"
+            "Use the buttons below to refresh balances, switch account mode, "
+            "or control auto trading."
+        )
+        for chat_id in config.app.allowed_chat_ids:
+            try:
+                await bot.bot.send_message(
+                    chat_id=chat_id,
+                    text=connected_text,
+                    parse_mode="Markdown",
+                    reply_markup=panel_markup(
+                        engine.auto_trading_enabled, label.endswith("-live")
+                    ),
+                )
+            except Exception:
+                logger.exception("failed to send broker-connected message to %s", chat_id)
 
     print("bot running — Ctrl+C to stop")
     try:

@@ -185,8 +185,12 @@ class LiveQuotexClient(Broker):
         # Session-token self-healing: the configured token can expire; when the
         # server rejects it during auth, mark it rejected and fall back to a
         # fresh email/password login. The refreshed token is cached in
-        # ``_refreshed_session`` and reused until it too is rejected.
+        # Refreshed credential sessions are cached separately for demo/live;
+        # never reuse a demo token when switching to the real account.
         self._token_rejected = False
+        self._refreshed_sessions: dict[bool, str] = {}
+        # Backward-compatible view used by older diagnostics/tests; the
+        # authoritative cache above remains keyed by account mode.
         self._refreshed_session: str | None = None
         self._depth_ready = asyncio.Event()  # set when depth/change received
         # Warm-subscription tracking: monotonic time of the last depth/change
@@ -362,8 +366,8 @@ class LiveQuotexClient(Broker):
         3. a fresh email/password login (self-heals an expired token).
         """
         demo = self.is_demo
-        if self._refreshed_session:
-            return self._refreshed_session, demo
+        if demo in self._refreshed_sessions:
+            return self._refreshed_sessions[demo], demo
         token = (self.config.demo_ssid if demo else self.config.live_ssid) or self.config.ssid
         if token and not self._token_rejected:
             return self._parse_ssid(token, default_demo=demo)
@@ -376,6 +380,7 @@ class LiveQuotexClient(Broker):
                 otp_bridge=self.config.otp_bridge,
                 proxy=self.config.proxy,
             )
+            self._refreshed_sessions[demo] = token
             self._refreshed_session = token
             self._token_rejected = False
             return token, demo

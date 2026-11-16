@@ -21,7 +21,9 @@ account if the group allows one. The session is stored in a local
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from typing import Any
 
 from telethon import TelegramClient, events
@@ -67,9 +69,17 @@ class GroupMonitor:
         api_hash: str,
         phone: str,
         links: tuple[str, ...],
+        all_channels: bool = False,
+        auth_bridge: Any = None,
+        selection_path: str = "data/monitor_selection.json",
     ) -> None:
         self._handler = handler
         self._links = tuple(links)
+        self._all_channels = all_channels
+        self._auth_bridge = auth_bridge
+        self._selection_path = selection_path
+        self._monitored_ids: set[int] = set()
+        self._handler_registered = False
         self._client = TelegramClient(session_path, api_id, api_hash)
         self._phone = phone
         self._targets: list[Any] = []
@@ -83,6 +93,26 @@ class GroupMonitor:
         return getattr(self._targets[0], "id", None)
 
     @property
+    def channel_labels(self) -> tuple[str, ...]:
+        """Human-readable channel names currently attached to the monitor."""
+        return tuple(
+            f"{getattr(target, 'title', None) or getattr(target, 'username', None) or 'channel'} "
+            f"(id {getattr(target, 'id', '?')})"
+            for target in self._targets
+        )
+
+    @property
+    def channel_options(self) -> tuple[tuple[int, str, bool], ...]:
+        """Return ``(id, label, selected)`` for every discovered channel."""
+        return tuple(
+            (int(getattr(target, "id", 0)),
+             f"{getattr(target, 'title', None) or getattr(target, 'username', None) or 'channel'} "
+             f"(id {getattr(target, 'id', '?')})",
+             int(getattr(target, "id", 0)) in self._monitored_ids)
+            for target in self._targets
+        )
+
+    @property
     def ready(self) -> asyncio.Event:
         return self._ready
 
@@ -92,18 +122,66 @@ class GroupMonitor:
         session file auto-authenticates on later runs."""
         # Interactive on first login (code via stdin); 2FA password prompted
         # the same way if enabled. Runs on the bot's own asyncio loop.
-        await self._client.start(phone=self._phone)
-        for link in self._links:
-            target = await self._resolve_target(link)
-            self._targets.append(target)
-        self._client.add_event_handler(
-            self._on_message, events.NewMessage(chats=self._targets)
-        )
+        start_kwargs: dict[str, Any] = {"phone": self._phone}
+        if self._auth_bridge is not None:
+            start_kwargs["code_callback"] = self._auth_bridge.request_text
+            start_kwargs["password"] = self._auth_bridge.request_text
+        await self._client.start(**start_kwargs)
+        if self._all_channels:
+            # A bot token cannot enumerate a user's channels. The Telethon
+            # user session can, so attach every broadcast channel in dialogs.
+            dialogs = await self._client.get_dialogs()
+            self._targets.extend(
+                dialog.entity for dialog in dialogs
+                if bool(getattr(dialog.entity, "broadcast", False))
+            )
+        else:
+            for link in self._links:
+                target = await self._resolve_target(link)
+                self._targets.append(target)
+        all_ids = {int(getattr(target, "id", 0)) for target in self._targets}
+        self._monitored_ids = all_ids
+        try:
+            with open(self._selection_path, "r", encoding="utf-8") as fh:
+                saved = {int(x) for x in json.load(fh)}
+            if saved & all_ids:
+                self._monitored_ids = saved & all_ids
+        except (FileNotFoundError, ValueError, TypeError, OSError):
+            pass
+        await self._refresh_event_handler()
         logger.info(
             "group monitor listening on %s",
             ", ".join(f"{t!r} (id {getattr(t, 'id', '?')})" for t in self._targets),
         )
         self._ready.set()
+
+    async def _refresh_event_handler(self) -> None:
+        """Replace the Telethon subscription with the current selection."""
+        if self._handler_registered:
+            self._client.remove_event_handler(self._on_message)
+            self._handler_registered = False
+        targets = [
+            target for target in self._targets
+            if int(getattr(target, "id", 0)) in self._monitored_ids
+        ]
+        if targets:
+            self._client.add_event_handler(self._on_message, events.NewMessage(chats=targets))
+            self._handler_registered = True
+
+    async def set_channel_monitoring(self, channel_id: int, enabled: bool) -> None:
+        """Enable/disable one discovered channel and persist the selection."""
+        ids = {int(getattr(target, "id", 0)) for target in self._targets}
+        if channel_id not in ids:
+            raise ValueError("channel is not in the discovered channel list")
+        if enabled:
+            self._monitored_ids.add(channel_id)
+        else:
+            self._monitored_ids.discard(channel_id)
+        await self._refresh_event_handler()
+        parent = os.path.dirname(os.path.abspath(self._selection_path))
+        os.makedirs(parent, exist_ok=True)
+        with open(self._selection_path, "w", encoding="utf-8") as fh:
+            json.dump(sorted(self._monitored_ids), fh)
 
     async def _resolve_target(self, link: str) -> Any:
         """Return the target group entity, joining it if the account isn't a
@@ -172,10 +250,11 @@ def should_run(
     api_id: int,
     api_hash: str,
     phone: str,
+    all_channels: bool = False,
 ) -> bool:
     """True when the monitor is configured (at least one link plus the three
     credential fields present). Accepts a single link or an iterable."""
     if isinstance(links, str):
         links = (links,)
     has_link = any(str(link).strip() for link in links)
-    return bool(has_link and api_id and api_hash.strip() and phone.strip())
+    return bool((has_link or all_channels) and api_id and api_hash.strip() and phone.strip())

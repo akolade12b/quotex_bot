@@ -31,6 +31,7 @@ class SignalHandler:
         signal_expiry_s: int = 0,
         parser: SignalParser | None = None,
         otp_bridge: object | None = None,
+        telegram_auth_bridge: object | None = None,
     ) -> None:
         self.queue = queue
         self.allowed_chat_ids = allowed_chat_ids
@@ -41,6 +42,7 @@ class SignalHandler:
         # Optional Telegram OTP bridge: while Quotex login awaits a PIN, a
         # message is routed to submit_pin() instead of being parsed as a signal.
         self.otp_bridge = otp_bridge
+        self.telegram_auth_bridge = telegram_auth_bridge
         # signal characteristics -> monotonic timestamp of last queue, used to
         # drop duplicate re-forwards of the same pending signal.
         self._seen: dict[tuple, float] = {}
@@ -79,6 +81,10 @@ class SignalHandler:
         # text is ever tried as a signal.
         if self.otp_bridge is not None and self.otp_bridge.submit_pin(message.text):
             logger.info("consumed OTP reply from chat %s (%.20r)", chat_id, message.text)
+            return
+        if (self.telegram_auth_bridge is not None
+                and self.telegram_auth_bridge.submit_pin(message.text)):
+            logger.info("consumed Telegram login reply from chat %s", chat_id)
             return
 
         await self.process_text(

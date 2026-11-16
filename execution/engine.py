@@ -76,6 +76,9 @@ class ExecutionEngine:
         # engine withholds the premature "CANCELLED" notification and lets the
         # recovery send the definitive result instead. Wired in main.py.
         self.recover_cancelled_outcomes = False
+        # Can be toggled by the Telegram control panel. Existing positions
+        # still settle; new entries and martingale follow-ups are skipped.
+        self.auto_trading_enabled = True
 
     # ----------------------------------------------------------------- entry
     async def on_signal(self, signal: Signal, *, wait_for_entry: bool = True) -> None:
@@ -119,6 +122,9 @@ class ExecutionEngine:
         ``known_balance`` (used for gales) is the balance captured at the
         previous trade's settlement — skipping a fresh broker read saves
         ~200ms of gale latency."""
+        if not self.auto_trading_enabled:
+            logger.info("auto trading disabled — skipping L%d %s", level, signal.asset)
+            return None
         if signal.signal_id is None:
             signal = replace(signal, signal_id=await self.repo.insert_signal(signal))
 

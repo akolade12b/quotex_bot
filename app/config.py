@@ -66,10 +66,12 @@ class AppConfig:
     # in as the user's own Telegram account (MTProto). See
     # telegram_signals/group_monitor.py. Empty monitor_links disables it.
     monitor_links: tuple[str, ...] = ()     # comma-separated invite links/usernames
+    monitor_all: bool = False               # monitor every broadcast channel in user session
     monitor_api_id: int = 0                 # from my.telegram.org (your account)
     monitor_api_hash: str = ""
     monitor_phone: str = ""                 # international format, e.g. +15551234567
     monitor_session: str = "data/userbot.session"
+    monitor_selection: str = "data/monitor_selection.json"
 
     @property
     def is_live(self) -> bool:
@@ -103,10 +105,12 @@ class AppConfig:
             live_ws_url=_env("QSB_WS_URL", ""),
             quotex_proxy=_env("QSB_QUOTEX_PROXY", ""),
             monitor_links=_env_tuple("QSB_MONITOR_LINK"),
+            monitor_all=_env_bool("QSB_MONITOR_ALL", False),
             monitor_api_id=_env_int("QSB_MONITOR_API_ID", 0),
             monitor_api_hash=_env("QSB_MONITOR_API_HASH", ""),
             monitor_phone=_env("QSB_MONITOR_PHONE", ""),
             monitor_session=_env("QSB_MONITOR_SESSION", "data/userbot.session"),
+            monitor_selection=_env("QSB_MONITOR_SELECTION", "data/monitor_selection.json"),
         )
 
 
